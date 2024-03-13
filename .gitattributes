@@ -1,2 +1,929 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+//***************************************************
+// minutosversidad del Valle de Guatemala
+// IE2023: Programación de Microcontroladores 
+// Autor: Esteban Longo Marroquin
+// Proyecto: Proyecto 1
+// Descripción: Reloj Digital 
+// Hardware: ATMEGA328P
+// Created: 21/02/2024 15:41:30
+//****************************************************
+// Encabezado 
+//****************************************************
+.include "M328PDEF.inc"
+
+.cseg
+.org 0x00
+	JMP MAIN   //se corre el bucle main con el setup 
+.org 0x0006
+	JMP INT_PC  //se axtiva la interrupción de pines 
+.org 0x001A
+	JMP INT_TIMER1  //interrupccion de timer 1
+.org 0x0020
+	JMP INT_TIMER0  //interrupccion de timer 1
+//****************************************************
+//Configuración de la Pila
+//****************************************************
+Main: 
+LDI R25, LOW(RAMEND)
+OUT SPL, R25
+LDI R17, HIGH(RAMEND)
+OUT SPH, R17
+
+//****************************************************
+
+//****************************************************
+//Configuración MCU
+//****************************************************
+SETUP:
+	LDI R25, 0b1000_0000     //el timer se establece a 8MHz
+	LDI R25, (1 << CLKPCE)
+	STS CLKPR, R25
+
+	LDI R25, 0b0000_0001
+	STS CLKPR, R25
+		
+	LDI R25, 0b0001_1111 //Configuramos al pueto B como entradas y salidas
+	OUT	PORTB, R25
+
+	LDI R25, 0b0010_0000 //Configuración al puerto B como pull ups
+	OUT DDRB, R25
+	
+	LDI R25, 0b1011_1111	//Configuramos el puerto C como salidas
+	OUT DDRC, R25
+
+	LDI R25, 0b1111_1111	//Configuramos el puerto D como salidas
+	OUT DDRD, R25
+
+	LDI R25, 0b0001_1111    //se establecen los pines 0 y 1 del puerto b como interrupciones
+	STS PCMSK0, R25
+
+	LDI R25, (1<<PCIE0)
+	STS PCICR, R25
+
+	SEI
+//***REGISTRO DE MODO*****
+	LDI R20, 0x00
+//****REGISTROS DE LA HORA********
+	LDI R21, 0x09   
+	LDI R22, 0x05
+	LDI R23, 0x00
+	LDI R24, 0x01
+//*****REGISTROS DE LA FECHA*********
+	LDI R26, 0x01
+	LDI R27, 0x03
+	LDI R18, 0x02
+	LDI R28, 0x01
+//****REGISTRO TIMER 1***********
+	LDI R29, 0x00
+//*****REGISTROS DE LA ALARMA******	
+	LDI R16, 0x09
+	LDI R17, 0x05
+	LDI R19, 0x10
+//***INICALIZACION TIMER 0 Y 1************	
+	CALL INT_T0 //llamamos la inicializacion del timer0
+	CALL INT_T1 //llamamos la inicializacion del timer1
+	
+//****************************************************
+//Configuración LOOP
+//****************************************************
+
+LOOP:                     //Loop para revisar el valor de la alarma con la hora actual y asi activar la alarma
+	MOV R5, R21
+	MOV R6, R22
+	MOV R7, R23
+	MOV R8, R24
+
+	MOV R9, R16
+	MOV R10, R17
+	MOV R12, R19
+
+	CP R5, R9          //Comparaciones entre la alarma y la hora 
+	BRNE LOOP1
+	CP R6, R10
+	BRNE LOOP1
+	SWAP R8 
+	ADD R8, R7
+	CP R8, R12
+	BRNE LOOP1
+	SBI PORTD, 0         //Si la alarma coincide con la hora, se activa la bocina en el puerto D0
+
+LOOP1:                  //Loop principal de la maquina de estados finitos donde se ve en que estado se encuentra el reloj
+
+	CPI R20, 0          //Modo 0, este es el modo de la hora 
+	BREQ MODO0
+	CPI R20, 1			//Modo 1, este es el modo de la fecha
+	BREQ M1
+	CPI R20, 2			//Modo 2, este es el modo de la configuracion de la hora 
+	BREQ M2		
+	CPI R20, 3			//Modo 3, este es el modo de la configuracion de la fecha 
+	BREQ M3
+	CPI R20, 4			//Modo 4, este es el modo de la Alarma 
+	BREQ M4
+	CPI R20, 5			//Modo 5, este es el modo de la configuracion de la alarma 
+	BREQ M5
+	
+	CPI R29, 60			//Cada vez que el overflow del timer1 llegue a 60 se incrementan los minutos
+	BREQ MIN1
+
+	JMP LOOP
+
+M1:                      //Saltos para cada uno de los modos, porque el breq no tiene rango muy alto de salto 
+	JMP MODO1
+M2:
+	JMP MODO2
+M3:
+	JMP MODO3
+M4:
+	JMP MODO4
+M5:
+	JMP MODO5
+//**************MODO 0******************
+MODO0:                 //MODO DE LA HORA
+//*****COMPARACIONES PARA SUBRUTINAS DE OVERFLOW DE LA HORA******
+	CPI R29, 60         
+	BREQ MIN1			
+	CPI R21, 10
+	BREQ MIN2
+	CPI R22, 6
+	BREQ HORA1
+	CPI R23, 10
+	BREQ HORA2
+	CPI R24, 2
+	BREQ REST
+
+MODO01:
+//*******VISUALIZACION DE CADA VALOR EN UN DISPLAY DIFERENTE
+	LDI R25, 0b0001_1110
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R21						//VALOR UNIDAD DE MINUTOS
+	LPM R25, Z
+	OUT PORTD, R25  
+	
+	CALL DELAY
+	
+	LDI R25, 0b1_1101
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R22						//VALOR DECENA DE MINUTOS
+	LPM R25, Z
+	OUT PORTD, R25 
+
+	CALL DELAY
+	
+	LDI R25, 0b1_1011
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1) 
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R23						//VALOR UNIDAD DE HORAS
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+
+	LDI R25, 0b1_0111
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R24						//VALOR DECENA DE HORAS
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+	JMP LOOP
+
+//*****SUBRUTINAS DE OVERFLOW DE LA HORA******
+MIN1:                //CADA MINUTO SE CAMBIA EL VALOR DEL DISPLAY 1, EL CUAL ES UNIDAD DE MINUTO
+	LDI R29, 0
+	INC R21
+	JMP MODO0
+MIN2:                //CADA 10 MINUTOS SE CAMBIA EL VALOR PARA PONER LAS DECENAS DEL MINUTO
+	LDI R21, 0
+	INC R22
+	JMP MODO0
+HORA1: 				// CADA 60 MINUTOS SE CAMBIA LA UNIDAD DE LA HORA
+	LDI R22, 0
+	INC R23
+	JMP MODO0
+HORA2:				//CUANDO LLEGUE A 10 SE CAMBIAN LAS DECENAS DE LA HORA 
+	LDI R23, 0
+	INC R24
+	JMP MODO0
+REST:				//RESETEO CUANDO SE LLEGA A 23:59 
+	CPI R23, 4
+	BREQ RESET
+	JMP MODO01
+RESET: 
+	LDI R21, 0
+	LDI R22, 0
+	LDI R23, 0
+	LDI R24, 0
+	INC R26
+	JMP MODO0
+
+//******************MODO 1*********************************
+MODO1:
+//*********COMPARACIONES PARA SUBRUTINAS DE OVERFLOWS DE LA FECHA**********
+	CPI R26, 10
+	BREQ DIA1
+	CPI R27, 3
+	BREQ DIA1111
+	CPI R18, 10
+	BREQ MES1
+	CPI R28, 1
+	BREQ MES1111
+//*******VISUALIZACION DE CADA VALOR EN UN DISPLAY DIFERENTE DE LA FECHA***************
+FECHA_F:
+	LDI R25, 0b10_1110
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R18						//VALOR UNIDAD DE MES
+	LPM R25, Z
+	OUT PORTD, R25  
+	
+	CALL DELAY
+	
+	LDI R25, 0b10_1101
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R28						//VALOR DECENA DE MES
+	LPM R25, Z
+	OUT PORTD, R25 
+
+	CALL DELAY
+	
+	LDI R25, 0b10_1011
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R26						//VALOR UNIDAD DE DIA
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+
+	LDI R25, 0b10_0111
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R27						//VALOR DECENA DE DIA
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+
+	JMP LOOP
+
+//*****SUBRUTINAS DE OVERFLOW DE LA FECHA******
+DIA1:               
+	LDI R26, 0						//CADA 10 DIAS SE CAMBIA EL VALOR PARA PONER LAS DECENAS DEL DIA
+	INC R27
+	JMP MODO1
+MES1:                
+	LDI R18, 0						//CADA 10 MESES SE CAMBIA EL VALOR PARA PONER LAS DECENAS DEL MES
+	INC R28
+	JMP MODO1
+DIA1111:							//CADA 31 DIAS SE CAMBIA EL VALOR PARA PONER LOS DIAS A 01
+	CPI R26, 2
+	BREQ OVERR
+	JMP FECHA_F
+OVERR: 
+	LDI R26, 1
+	LDI R27, 0
+	INC R18
+	JMP MODO1
+
+MES1111:							//CADA 12 MESES SE CAMBIA EL VALOR PARA PONER LOS MESES A 01
+	CPI R18, 3
+	BREQ OVERMR
+	JMP FECHA_F
+OVERMR: 
+	LDI R18, 1
+	LDI R28, 0
+	JMP MODO1
+
+//******************MODO 2*********************************
+MODO2:
+//*********COMPARACIONES PARA SUBRUTINAS DE OVERFLOWS DE LA CONFIGURACION DE LA HORA**********
+	CPI R29, 60
+	BREQ MIN11
+	CPI R21, 10
+	BREQ MIN22
+	CPI R22, 6
+	BREQ HORA11
+	CPI R23, 10
+	BREQ HORA22
+	CPI R24, 2
+	BREQ REST1
+//*******VISUALIZACION DE CADA VALOR EN UN DISPLAY DIFERENTE
+MODO21:
+	LDI R25, 0b1110
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R21						//VALOR UNIDAD DE MINUTOS
+	LPM R25, Z
+	OUT PORTD, R25  
+	
+	CALL DELAY
+	
+	LDI R25, 0b1101
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R22						//VALOR DECENA DE MINUTOS
+	LPM R25, Z
+	OUT PORTD, R25 
+
+	CALL DELAY
+	
+	LDI R25, 0b1011
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R23						//VALOR UNIDAD DE HORAS
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+
+	LDI R25, 0b0111
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R24						//VALOR DECENA DE HORAS
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+	JMP LOOP
+
+//*****SUBRUTINAS DE OVERFLOW DE LA CONFIGURACION HORA******
+MIN11:						//CADA MINUTO SE CAMBIA EL VALOR DEL DISPLAY 1, EL CUAL ES UNIDAD DE MINUTO       
+	LDI R29, 0
+	INC R21
+	JMP MODO2
+MIN22:						//CADA 10 MINUTOS SE CAMBIA EL VALOR PARA PONER LAS DECENAS DEL MINUTO   
+	LDI R21, 0
+	INC R22
+	JMP MODO2
+HORA11: 					// CADA 60 MINUTOS SE REINICIA		
+	LDI R22, 0
+	JMP MODO2
+HORA22:						//CUANDO LLEGUE A 10 SE CAMBIAN LAS DECENAS DE LA HORA	
+	LDI R23, 0
+	INC R24
+	JMP MODO2
+REST1:						//RESETEO CUANDO SE LLEGA A 24
+	CPI R23, 4
+	BREQ RESET1
+	JMP MODO21
+RESET1: 
+	LDI R23, 0
+	LDI R24, 0
+	JMP MODO2
+
+//******************MODO 3*********************************
+MODO3:
+//*********COMPARACIONES PARA SUBRUTINAS DE OVERFLOWS DE LA CONFIGURACION DE LA FECHA**********
+	CPI R26, 10
+	BREQ DIA11
+	CPI R27, 3
+	BREQ DIA111
+	CPI R18, 10
+	BREQ MES11
+	CPI R28, 1
+	BREQ MES111
+//*******VISUALIZACION DE CADA VALOR EN UN DISPLAY DIFERENTE	
+FECHA:
+	LDI R25, 0b1110
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R18						//VALOR UNIDAD DE MES
+	LPM R25, Z
+	OUT PORTD, R25  
+	
+	CALL DELAY
+	
+	LDI R25, 0b1101
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R28						//VALOR DECENA DE MES
+	LPM R25, Z
+	OUT PORTD, R25 
+
+	CALL DELAY
+	
+	LDI R25, 0b1011
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R26						//VALOR UNIDAD DE DIA
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+
+	LDI R25, 0b0111
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R27						//VALOR DECENA DE DIA
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+
+	JMP LOOP
+
+//*****SUBRUTINAS DE OVERFLOW DE LA CONFIGURACION FECHA******
+DIA11:				//CADA 10 DIAS SE CAMBIA EL VALOR PARA PONER LAS DECENAS DEL DIA
+	LDI R26, 0
+	INC R27
+	JMP MODO3
+MES11:				//CADA 10 MESES SE CAMBIA EL VALOR PARA PONER LAS DECENAS DEL MES       
+	LDI R18, 0
+	INC R28
+	JMP MODO3
+DIA111:				//CADA 31 DIAS SE CAMBIA EL VALOR PARA PONER LOS DIAS A 01
+	CPI R26, 2
+	BREQ OVER
+	JMP FECHA
+OVER:				
+	LDI R26, 1
+	LDI R27, 0
+	JMP MODO3
+		
+MES111:				//CADA 12 MESES SE CAMBIA EL VALOR PARA PONER LOS MESES A 01
+	CPI R18, 3
+	BREQ OVERM
+	JMP FECHA
+OVERM: 
+	LDI R18, 1
+	LDI R28, 0
+	JMP MODO3
+
+
+//******************MODO 4*********************************
+MODO4:
+//*******VISUALIZACION DE CADA VALOR EN UN DISPLAY DIFERENTE
+	LDI R25, 0b11_1110
+	OUT PORTC, R25
+	
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R16						//VALOR UNIDAD DE MINUTOS
+	LPM R25, Z
+	OUT PORTD, R25  
+	
+	CALL DELAY
+	
+	LDI R25, 0b11_1101
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R17						//VALOR DECENA DE MINUTOS
+	LPM R25, Z
+	OUT PORTD, R25 
+
+	CALL DELAY
+	
+	LDI R25, 0b11_1011
+	OUT PORTC, R25
+
+	LDI R25, 0x0F
+	MOV R15, R19
+	AND R25, R15
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R25						//VALOR UNIDAD DE HORAS
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+
+	LDI R25, 0b11_0111
+	OUT PORTC, R25
+
+	LDI R25, 0x0F
+	SWAP R15
+	AND R25, R15
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R25						//VALOR DECENA DE HORAS
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+	JMP LOOP
+
+//******************MODO 5*********************************
+MODO5:
+//*********COMPARACIONES PARA SUBRUTINAS DE OVERFLOWS DE LA CONFIGURACION DE LA ALARMA**********
+	CPI R29, 60
+	BREQ ALAR1
+	CPI R16, 10
+	BREQ ALAR2
+	CPI R17, 6
+	BREQ ALAR3
+	CPI R19, 0x0A
+	BREQ ALARMA1
+	CPI R19, 0x1A
+	BREQ ALARMA2
+	CPI R19, 0x24
+	BREQ ALARMA3
+//*******VISUALIZACION DE CADA VALOR EN UN DISPLAY DIFERENTE	
+	LDI R25, 0b1110
+	OUT PORTC, R25
+	
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R16						//VALOR UNIDAD DE MINUTOS
+	LPM R25, Z
+	OUT PORTD, R25  
+	
+	CALL DELAY
+	
+	LDI R25, 0b1101
+	OUT PORTC, R25
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R17						//VALOR DECENA DE MINUTOS
+	LPM R25, Z
+	OUT PORTD, R25 
+
+	CALL DELAY
+	
+	LDI R25, 0b1011
+	OUT PORTC, R25
+
+	LDI R25, 0x0F
+	MOV R15, R19
+	AND R25, R15
+
+	LDI ZH, HIGH(TABLA7SEG << 1)   
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R25						//VALOR UNIDAD DE HORAS
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+
+	LDI R25, 0b0111
+	OUT PORTC, R25
+
+	LDI R25, 0x0F
+	SWAP R15
+	AND R25, R15
+
+	LDI ZH, HIGH(TABLA7SEG << 1)  
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R25						//VALOR DECENA DE HORAS
+	LPM R25, Z
+	OUT PORTD, R25 
+	
+	CALL DELAY
+	JMP LOOP
+
+//*****SUBRUTINAS DE OVERFLOW DE LA CONFIGURACION ALARMA******
+ALAR1:				//CADA MINUTO SE CAMBIA EL VALOR DEL DISPLAY 1, EL CUAL ES UNIDAD DE MINUTO     
+	LDI R29, 0
+	INC R16
+	JMP MODO5
+ALAR2:				//CADA 10 MINUTOS SE CAMBIA EL VALOR PARA PONER LAS DECENAS DEL MINUTO      
+	LDI R16, 0
+	INC R17
+	JMP MODO5
+ALAR3: 				// CADA 60 MINUTOS SE REINICIA		
+	LDI R17, 0
+	JMP MODO5
+
+ALARMA1:				//CUANDO LLEGUE A 10 SE CAMBIAN LAS DECENAS DE LA HORA
+	LDI R19, 0x10
+	JMP MODO5
+
+ALARMA2:				//RESETEO CUANDO SE LLEGA A 24
+	LDI R19, 0x20
+	JMP MODO5
+
+ALARMA3: 
+	LDI R19, 0x00
+	JMP MODO5
+
+//**********SUBRUTINA DE DELAY EL CUAL HACE POSIBLE LA MULTIPLEXACION********
+DELAY:             
+	LDI R25, 255
+DELAY1:
+	DEC R25
+	BRNE DELAY1 
+	LDI R25, 255
+DELAY2:
+	DEC R25
+	BRNE DELAY2
+	LDI R25, 255
+DELAY3:
+	DEC R25
+	BRNE DELAY3
+	LDI R25, 255
+DELAY4:
+	DEC R25
+	BRNE DELAY4
+
+	RET
+
+
+//****************************************************
+//Subrutina 
+//****************************************************
+INT_PC:
+	PUSH R25			//guardamos el valor de R25
+	IN R25, SREG
+	PUSH R25
+
+	IN R25, PINB		//los valores del puerto B los almacenamos en R25
+
+	SBRC R25, PB0		//analisis de los botones para aumentar el modo 
+	JMP MOOD
+	
+	INC R20				//se hace un buble para que el modo no exceda de 5  
+	CPI R20, 6   
+	BRNE SALIR1
+	LDI R20, 0
+	JMP SALIR
+MOOD:					//comparamos el modo para saber si ejecutar los botones o no
+	CPI R20, 2
+	BREQ MOOD2
+	CPI R20, 3
+	BREQ MOOD3
+	CPI R20, 5
+	BREQ MOOD5_1
+	JMP SALIR
+MOOD5_1:
+	JMP MOOD5
+MOOD2:
+BOTTON1:
+	SBRC R25, PB1		//analisis de los botones para aumentar registro unidad minutos
+	JMP BOTTON2
+	
+	INC R21
+
+BOTTON2:
+	SBRC R25, PB2		//analisis de los botones para decrementar registro unidad minutos
+	JMP BOTTON3
+	
+	DEC R21
+
+	CPI R21, -1			//underflow de las unidades de los minuto
+	BRNE BOTTON3
+	LDI R21, 9
+	DEC R22
+	CPI R22, -1
+	BRNE SALIR1
+	LDI R22, 5
+	JMP BOTTON3
+
+
+BOTTON3:
+	SBRC R25, PB3		//analisis de los botones para aumentar registro unidad horas
+	JMP BOTTON4
+	
+	INC R23
+
+BOTTON4:
+	SBRC R25, PB4		//analisis de los botones para disminuir registro unidad horas
+	JMP SALIR
+	
+	DEC R23				//underflow de las unidades de las horas
+	CPI R23, -1
+	BRNE SALIR1
+	LDI R23, 9
+	DEC R24
+	CPI R24, -1
+	BRNE SALIR1
+	LDI R24, 2
+	LDI R23, 3  
+	JMP SALIR
+SALIR1:
+	JMP SALIR
+MOOD3:
+BOTTON11:
+	SBRC R25, PB1		//analisis de los botones para aumentar registro unidad dia
+	JMP BOTTON22
+	INC R26
+BOTTON22:
+	SBRC R25, PB2		//analisis de los botones para disminuir registro unidad dia
+	JMP BOTTON33
+	DEC R26
+
+	CPI R26, -1			//underflow de las unidades de los dias
+	BRNE SALIR
+	LDI R26, 9
+	DEC R27
+	CPI R27, -1
+	BRNE SALIR
+	LDI R27, 3
+	LDI R26, 1  
+	JMP SALIR
+BOTTON33:
+	SBRC R25, PB3		//analisis de los botones para aumentar registro unidad mes
+	JMP BOTTON44
+	INC R18
+BOTTON44:
+	SBRC R25, PB4		//analisis de los botones para disminuir registro unidad mes
+	JMP SALIR
+	DEC R18
+	CPI R18, -1			//underflow de las unidades de los meses
+	BRNE SALIR
+	LDI R18, 9
+	DEC R28
+	CPI R28, -1
+	BRNE SALIR
+	LDI R28, 1
+	LDI R18, 2  
+	JMP SALIR
+
+	JMP SALIR
+
+MOOD5:
+BOTTON111:
+	SBRC R25, PB1		//analisis de los botones para aumentar registro unidad minutos
+	JMP BOTTON222
+	INC R16
+BOTTON222:
+	SBRC R25, PB2		//analisis de los botones para disminuir registro unidad minutos
+	JMP BOTTON333
+	DEC R16
+
+	CPI R16, -1			//underflow de las unidades de los minutos
+	BRNE BOTTON333
+	LDI R16, 9
+	DEC R17
+	CPI R17, -1
+	BRNE SALIR
+	LDI R17, 5
+BOTTON333:
+	SBRC R25, PB3		//analisis de los botones para aumentar registro unidad horas
+	JMP BOTTON444
+	INC R19
+BOTTON444:
+	SBRC R25, PB4		//analisis de los botones para disminuir registro unidad horas
+	JMP SALIR
+	DEC R19
+	
+	CPI R19, 0xFF		//underflow de las unidades de las horas
+	BRNE SIG
+	LDI R19, 0x23
+SIG:
+	CPI R19, 0x1F
+	BRNE SIG1
+	LDI R19, 0x19
+SIG1:
+	CPI R19, 0x0F
+	BRNE SALIR
+	LDI R19, 0x09
+	
+	JMP SALIR
+SALIR:
+
+	SBI PCIFR, PCIF0
+
+	POP R25
+	OUT SREG, R25
+	POP R25				//Devolvemos el valor antes guardado
+	
+	RETI				//retorno de interrupcion 
+
+INT_T1:
+	LDI R25, 0
+	STS TCCR1A, R25   //inicializacion de timer 0 como contador 
+	
+	LDI R25, (1<<CS02) | (1<<CS00)     //seleccion de prescaler de 1024 
+	STS TCCR1B, R25       
+	
+	LDI R25, 0xE1		//valores prescalares para el conteo 
+	STS TCNT1H, R25
+	LDI R25, 0x7B
+	STS TCNT1L, R25
+
+	LDI R25, (1<<TOIE1)   //mascara del timer0
+	STS TIMSK1, R25
+
+	RET
+
+INT_TIMER1:
+	PUSH R25			//guardamos el valor de R25
+ 	IN R25, SREG
+	PUSH R25
+     
+	LDI R25, 0xE1		//valores prescalares para el conteo 
+	STS TCNT1H, R25
+	LDI R25, 0x7B      
+	STS TCNT1L, R25   
+	SBI TIFR1, TOV1
+	
+	INC R29         
+
+	POP R25
+	OUT SREG, R25 
+	POP R25				//Devolvemos el valor antes guardado
+
+	RETI				//retorno de interrupcion 
+
+INT_T0:
+	LDI R25, 0
+	OUT TCCR0A, R25      //inicializacion de timer 0 como contador 
+	
+	LDI R25, (1<<CS02) | (1<<CS00)     //seleccion de prescaler de 1024 
+	OUT TCCR0B, R25       
+	
+	LDI R25, 177		//valor de conteo inicial 
+	OUT TCNT0, R25
+
+	LDI R25, (1<<TOIE0)   //mascara del timer0
+	STS TIMSK0, R25
+
+	LDI R25, 0
+
+	RET
+
+INT_TIMER0:
+	PUSH R25			//guardamos el valor de R25
+ 	IN R25, SREG
+	PUSH R25
+
+	LDI R25, 177		//valor de conteo inicial 
+	OUT TCNT0, R25     
+	SBI TIFR0, TOV0
+	
+	INC R2				//realizamos el incremento en las unidades en cada interrupcion del timer0
+
+	CPI R20, 2			//ANALISIS DE ESTADO 
+	BREQ LED_CH
+	CPI R20, 3
+	BREQ LED_CF
+	CPI R20, 5
+	BREQ LED_A
+	JMP SALIR_POP
+
+LED_CH:					//ANALISIS DE ESTADO PARA TITIAL LED CONFI_HORA
+	LDI R25, 50
+	SUB R25, R2 
+	BRNE SALIR_POP
+	SBI PINC, 4
+	JMP SALIR_POP
+LED_CF:					//ANALISIS DE ESTADO PARA TITIAL LED CONFI_FECHA
+	LDI R25, 50
+	SUB R25, R2 
+	BRNE SALIR_POP
+	SBI PINC, 5
+	JMP SALIR_POP
+LED_A:					//ANALISIS DE ESTADO PARA TITIAL LED CONFI_ALARMA
+	LDI R25, 50
+	SUB R25, R2 
+	BRNE SALIR_POP
+	SBI PINC, 4
+	SBI PINC, 5
+	JMP SALIR_POP
+
+SALIR_POP:
+	LDI R25, 50			//CONTEO TIMER PARA LEDS DE LOS DISPLAYS
+	SUB R25, R2 
+	BRNE SALIR_POP1
+	CLR R2
+	SBI PINB, PB5
+
+SALIR_POP1:
+	POP R25
+	OUT SREG, R25  
+	POP R25         //Devolvemos el valor antes guardado
+
+	RETI		   //retorno de interrupcion 
+
+TABLA7SEG: .DB 0x7E, 0x0C, 0xB6, 0x9E, 0xCC, 0xDA, 0xFA, 0x0E, 0xFE, 0xDE  //TABLA DE VALORES PARA EL DISPLAY 
+//****************************************************
